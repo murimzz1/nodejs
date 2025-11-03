@@ -1,34 +1,36 @@
-
-const express = require('express');
-const path = require('path');
-const indexRouter = require('./routes/index');
-
+const express = require("express");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware: log request method and url
-app.use((req, res, next) => {
-  console.info(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  next();
+// Middleware to parse JSON data
+app.use(express.json());
+
+// Default route
+app.get("/", (req, res) => {
+  res.send("ESP32 Multi-Sensor API is running 🚀");
 });
 
-// Static files
-app.use(express.static(path.resolve(__dirname, 'public')));
+// Route for receiving data from ESP32
+app.post("/api/data", (req, res) => {
+  const {
+    temperature1,
+    temperature2,
+    co2,
+    pressure,
+    humidity,
+    energyMeter
+  } = req.body;
 
-// Main routes
-app.use('/', indexRouter);
+  console.log("📡 Data received from ESP32:");
+  console.log("🌡️ Temperature Sensor 1:", temperature1);
+  console.log("🌡️ Temperature Sensor 2:", temperature2);
+  console.log("💨 CO₂ Sensor:", co2);
+  console.log("🧭 Pressure Sensor:", pressure);
+  console.log("💧 Humidity Sensor:", humidity);
+  console.log("⚡ Energy Meter:", energyMeter);
 
-// 404 handler
-app.use((req, res) => {
-  res.status(404).sendFile(path.resolve(__dirname, 'views', '404.html'));
+  res.json({ message: "Data received successfully!" });
 });
 
-// Error handler
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).send('Internal Server Error');
-});
-
-app.listen(PORT, () => {
-  console.log(`Server listening: http://localhost:${PORT}`);
-});
+// Start server
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
