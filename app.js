@@ -3,11 +3,11 @@ const cors = require('cors');
 const app = express();
 const port = process.env.PORT || 8080;
 
-// Allow CORS and JSON data
+// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Temporary in-memory storage
+// Temporary in-memory data storage
 let sensorData = [];
 
 // Default route
@@ -15,7 +15,7 @@ app.get('/', (req, res) => {
   res.send('🚀 ESP32 Multi-Sensor API is running and ready for data!');
 });
 
-// POST route - ESP32 sends data here
+// ✅ POST route for ESP32 to send data
 app.post('/data', (req, res) => {
   const data = req.body;
   
@@ -23,26 +23,23 @@ app.post('/data', (req, res) => {
     return res.status(400).json({ message: 'No sensor data received' });
   }
 
-  // Add timestamp for tracking
+  // Add timestamp for record-keeping
   data.timestamp = new Date().toISOString();
-
-  // Save data in memory (for now)
   sensorData.push(data);
 
   console.log('📡 Received data:', data);
-
   res.status(200).json({
     message: 'Data received successfully',
     received: data
   });
 });
 
-// GET route - frontend or you can view data
+// ✅ GET route to view data
 app.get('/data', (req, res) => {
   res.json(sensorData);
 });
 
-// Start server
+// Start the server
 app.listen(port, () => {
   console.log(`✅ Server running on port ${port}`);
 });
