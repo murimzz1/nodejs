@@ -84,21 +84,59 @@ app.post('/data', async (req, res) => {
   }
 });
 
-// GET route - fetch recent data (DB or in-memory)
+// GET /data with optional time filters
 app.get('/data', async (req, res) => {
-  if (connectionString) {
-    try {
-      const q = 'SELECT id, device_id, payload, timestamp_utc FROM sensor_readings ORDER BY timestamp_utc DESC LIMIT 200';
-      const result = await pool.query(q);
-      return res.json(result.rows);
-    } catch (err) {
-      console.error('DB select error:', err);
-      return res.status(500).json({ message: 'Database error', error: err.message });
+  try {
+    let { minutes, hours, days, from, to, limit } = req.query;
+
+    // default limit
+    limit = limit ? parseInt(limit) : 200;
+
+    // Build dynamic query
+    let whereClauses = [];
+    let values = [];
+    let idx = 1;
+
+    // Time filters
+    if (minutes) {
+      whereClauses.push(`timestamp_utc >= NOW() - INTERVAL '${parseInt(minutes)} minutes'`);
     }
-  } else {
-    return res.json(memoryStore);
+    if (hours) {
+      whereClauses.push(`timestamp_utc >= NOW() - INTERVAL '${parseInt(hours)} hours'`);
+    }
+    if (days) {
+      whereClauses.push(`timestamp_utc >= NOW() - INTERVAL '${parseInt(days)} days'`);
+    }
+
+    if (from) {
+      whereClauses.push(`timestamp_utc >= $${idx++}`);
+      values.push(new Date(from));
+    }
+    if (to) {
+      whereClauses.push(`timestamp_utc <= $${idx++}`);
+      values.push(new Date(to));
+    }
+
+    // Join WHERE clause
+    const whereSQL = whereClauses.length > 0 ? "WHERE " + whereClauses.join(" AND ") : "";
+
+    const q = `
+      SELECT id, device_id, payload, timestamp_utc
+      FROM sensor_readings
+      ${whereSQL}
+      ORDER BY timestamp_utc DESC
+      LIMIT ${limit};
+    `;
+
+    const result = await pool.query(q, values);
+    return res.json(result.rows);
+
+  } catch (err) {
+    console.error("DB select error:", err);
+    return res.status(500).json({ message: "Database error", error: err.message });
   }
 });
+
 
 app.listen(port, () => {
   console.log(`✅ Server running on port ${port}`);
