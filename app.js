@@ -45,6 +45,30 @@ app.get("/", (req, res) => {
   res.send("🚀 ESP32 Multi-Sensor API running!");
 });
 
+// Convert UTC → EAT (Nairobi) and format
+function formatToEAT(dateObj) {
+  const eatDate = new Date(
+    dateObj.toLocaleString("en-US", { timeZone: "Africa/Nairobi" })
+  );
+
+  // Format: YYYY-MM-DD HH:MM:SS
+  const pad = (n) => (n < 10 ? "0" + n : n);
+
+  return (
+    eatDate.getFullYear() +
+    "-" +
+    pad(eatDate.getMonth() + 1) +
+    "-" +
+    pad(eatDate.getDate()) +
+    " " +
+    pad(eatDate.getHours()) +
+    ":" +
+    pad(eatDate.getMinutes()) +
+    ":" +
+    pad(eatDate.getSeconds())
+  );
+}
+
 // ===========================
 //   POST /data
 // ===========================
@@ -55,14 +79,14 @@ app.post("/data", async (req, res) => {
     return res.status(400).json({ message: "No sensor data received" });
   }
 
-  // Extract device_id but remove it from payload to avoid duplicate storage
+  // Extract device_id but remove it from payload
   const deviceId = data.deviceId || data.device_id || null;
   delete data.deviceId;
   delete data.device_id;
 
   // Add server timestamp
-  const serverTimestamp = new Date();
-  data.server_timestamp = serverTimestamp.toISOString();
+  const now = new Date();
+  data.server_timestamp = now.toISOString();
 
   if (connectionString) {
     try {
@@ -74,15 +98,13 @@ app.post("/data", async (req, res) => {
       const result = await pool.query(q, [deviceId, data]);
       const inserted = result.rows[0];
 
-      const formatted = new Date(inserted.timestamp_utc)
-        .toISOString()
-        .replace("T", " ")
-        .slice(0, 19);
+      // Format timestamp to EAT only
+      const formattedEAT = formatToEAT(inserted.timestamp_utc);
 
       return res.status(201).json({
         message: "Data stored successfully",
         id: inserted.id,
-        timestamp_formatted: formatted,
+        timestamp: formattedEAT,   // EAT only
         received: data
       });
     } catch (err) {
@@ -106,7 +128,6 @@ app.get("/data", async (req, res) => {
   try {
     let { minutes, hours, days, from, to, page, pageSize } = req.query;
 
-    // Pagination defaults
     page = page ? parseInt(page) : 1;
     pageSize = pageSize ? parseInt(pageSize) : 50;
 
@@ -117,7 +138,6 @@ app.get("/data", async (req, res) => {
     let values = [];
     let idx = 1;
 
-    // Time filters
     if (minutes) whereClauses.push(`timestamp_utc >= NOW() - INTERVAL '${parseInt(minutes)} minutes'`);
     if (hours) whereClauses.push(`timestamp_utc >= NOW() - INTERVAL '${parseInt(hours)} hours'`);
     if (days) whereClauses.push(`timestamp_utc >= NOW() - INTERVAL '${parseInt(days)} days'`);
@@ -133,7 +153,7 @@ app.get("/data", async (req, res) => {
 
     const whereSQL = whereClauses.length ? `WHERE ${whereClauses.join(" AND ")}` : "";
 
-    // Main paginated query
+    // Query + pagination
     const q = `
       SELECT id, device_id, payload, timestamp_utc
       FROM sensor_readings
@@ -142,7 +162,6 @@ app.get("/data", async (req, res) => {
       LIMIT ${limit} OFFSET ${offset};
     `;
 
-    // Count total rows matching filters
     const qCount = `
       SELECT COUNT(*) AS total
       FROM sensor_readings
@@ -157,13 +176,12 @@ app.get("/data", async (req, res) => {
     const totalRows = parseInt(countResult.rows[0].total);
     const totalPages = Math.ceil(totalRows / pageSize);
 
-    // Format timestamps for frontend
+    // Convert all timestamps to EAT only
     const formatted = result.rows.map(row => ({
-      ...row,
-      timestamp_formatted: new Date(row.timestamp_utc)
-        .toISOString()
-        .replace("T", " ")
-        .slice(0, 19)
+      id: row.id,
+      device_id: row.device_id,
+      payload: row.payload,
+      timestamp: formatToEAT(row.timestamp_utc)   // clean EAT only
     }));
 
     return res.json({
