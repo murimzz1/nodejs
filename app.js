@@ -1,7 +1,7 @@
 // app.js
-const express = require('express');
-const cors = require('cors');
-const { Pool } = require('pg');
+const express = require("express");
+const cors = require("cors");
+const { Pool } = require("pg");
 
 const app = express();
 const port = process.env.PORT || 8080;
@@ -9,19 +9,17 @@ const port = process.env.PORT || 8080;
 app.use(cors());
 app.use(express.json());
 
-// Configure PG pool using Railway DATABASE_URL environment variable
-// Railway provides DATABASE_URL (Postgres). For many managed providers we need SSL.
+// Configure PG connection (Railway)
 const connectionString = process.env.DATABASE_URL || null;
 const pool = new Pool({
-  connectionString: connectionString,
-  // If using Railway/Postgres with SSL required, allow this:
+  connectionString,
   ssl: connectionString ? { rejectUnauthorized: false } : false
 });
 
-// Initialize DB table (idempotent)
+// Initialize DB
 (async () => {
   if (!connectionString) {
-    console.warn('⚠️  No DATABASE_URL found. The app will run in memory only.');
+    console.warn("⚠️ No DATABASE_URL found. Running in memory mode.");
     return;
   }
   try {
@@ -33,80 +31,96 @@ const pool = new Pool({
         timestamp_utc TIMESTAMPTZ DEFAULT NOW()
       );
     `);
-    console.log('✅ sensor_readings table ready.');
+    console.log("✅ sensor_readings table ready.");
   } catch (err) {
-    console.error('❌ Failed to create table:', err);
+    console.error("❌ DB init error:", err);
   }
 })();
 
-// In-memory fallback storage when no DB is configured
+// In-memory fallback
 let memoryStore = [];
 
-// Root - sanity
-app.get('/', (req, res) => {
-  res.send('🚀 ESP32 Multi-Sensor API is running and ready for data!');
+// Root
+app.get("/", (req, res) => {
+  res.send("🚀 ESP32 Multi-Sensor API running!");
 });
 
-// POST route - ESP32 sends data here
-app.post('/data', async (req, res) => {
-  const data = req.body;
+// ===========================
+//   POST /data
+// ===========================
+app.post("/data", async (req, res) => {
+  let data = req.body;
+
   if (!data || Object.keys(data).length === 0) {
-    return res.status(400).json({ message: 'No sensor data received' });
+    return res.status(400).json({ message: "No sensor data received" });
   }
 
-  // Add a timestamp server-side
-  data.server_timestamp = new Date().toISOString();
+  // Extract device_id but remove it from payload to avoid duplicate storage
+  const deviceId = data.deviceId || data.device_id || null;
+  delete data.deviceId;
+  delete data.device_id;
 
-  // If DB is available, insert; otherwise keep in-memory
+  // Add server timestamp
+  const serverTimestamp = new Date();
+  data.server_timestamp = serverTimestamp.toISOString();
+
   if (connectionString) {
     try {
-      const deviceId = data.deviceId || data.device_id || null;
-      const q = 'INSERT INTO sensor_readings (device_id, payload) VALUES ($1, $2) RETURNING id, timestamp_utc';
-      const values = [deviceId, data];
-      const result = await pool.query(q, values);
+      const q = `
+        INSERT INTO sensor_readings (device_id, payload)
+        VALUES ($1, $2)
+        RETURNING id, timestamp_utc
+      `;
+      const result = await pool.query(q, [deviceId, data]);
       const inserted = result.rows[0];
-      console.log('📡 Saved to DB id=', inserted.id);
+
+      const formatted = new Date(inserted.timestamp_utc)
+        .toISOString()
+        .replace("T", " ")
+        .slice(0, 19);
+
       return res.status(201).json({
-        message: 'Data received and stored in DB',
+        message: "Data stored successfully",
         id: inserted.id,
-        timestamp_utc: inserted.timestamp_utc,
+        timestamp_formatted: formatted,
         received: data
       });
     } catch (err) {
-      console.error('DB insert error:', err);
-      return res.status(500).json({ message: 'Database error', error: err.message });
+      console.error("DB insert error:", err);
+      return res.status(500).json({ message: "Database error", error: err.message });
     }
-  } else {
-    // fallback memory
-    memoryStore.push(data);
-    console.log('📡 Saved to memoryStore:', data);
-    return res.status(200).json({ message: 'Data received (memory)', received: data });
   }
+
+  // Memory fallback
+  memoryStore.push(data);
+  return res.status(200).json({
+    message: "Data received (memory mode)",
+    received: data
+  });
 });
 
-// GET /data with optional time filters
-app.get('/data', async (req, res) => {
+// ===========================
+//   GET /data (filters + pagination)
+// ===========================
+app.get("/data", async (req, res) => {
   try {
-    let { minutes, hours, days, from, to, limit } = req.query;
+    let { minutes, hours, days, from, to, page, pageSize } = req.query;
 
-    // default limit
-    limit = limit ? parseInt(limit) : 200;
+    // Pagination defaults
+    page = page ? parseInt(page) : 1;
+    pageSize = pageSize ? parseInt(pageSize) : 50;
 
-    // Build dynamic query
+    const offset = (page - 1) * pageSize;
+    const limit = pageSize;
+
     let whereClauses = [];
     let values = [];
     let idx = 1;
 
     // Time filters
-    if (minutes) {
-      whereClauses.push(`timestamp_utc >= NOW() - INTERVAL '${parseInt(minutes)} minutes'`);
-    }
-    if (hours) {
-      whereClauses.push(`timestamp_utc >= NOW() - INTERVAL '${parseInt(hours)} hours'`);
-    }
-    if (days) {
-      whereClauses.push(`timestamp_utc >= NOW() - INTERVAL '${parseInt(days)} days'`);
-    }
+    if (minutes) whereClauses.push(`timestamp_utc >= NOW() - INTERVAL '${parseInt(minutes)} minutes'`);
+    if (hours) whereClauses.push(`timestamp_utc >= NOW() - INTERVAL '${parseInt(hours)} hours'`);
+    if (days) whereClauses.push(`timestamp_utc >= NOW() - INTERVAL '${parseInt(days)} days'`);
 
     if (from) {
       whereClauses.push(`timestamp_utc >= $${idx++}`);
@@ -117,19 +131,52 @@ app.get('/data', async (req, res) => {
       values.push(new Date(to));
     }
 
-    // Join WHERE clause
-    const whereSQL = whereClauses.length > 0 ? "WHERE " + whereClauses.join(" AND ") : "";
+    const whereSQL = whereClauses.length ? `WHERE ${whereClauses.join(" AND ")}` : "";
 
+    // Main paginated query
     const q = `
       SELECT id, device_id, payload, timestamp_utc
       FROM sensor_readings
       ${whereSQL}
       ORDER BY timestamp_utc DESC
-      LIMIT ${limit};
+      LIMIT ${limit} OFFSET ${offset};
     `;
 
-    const result = await pool.query(q, values);
-    return res.json(result.rows);
+    // Count total rows matching filters
+    const qCount = `
+      SELECT COUNT(*) AS total
+      FROM sensor_readings
+      ${whereSQL};
+    `;
+
+    const [result, countResult] = await Promise.all([
+      pool.query(q, values),
+      pool.query(qCount, values)
+    ]);
+
+    const totalRows = parseInt(countResult.rows[0].total);
+    const totalPages = Math.ceil(totalRows / pageSize);
+
+    // Format timestamps for frontend
+    const formatted = result.rows.map(row => ({
+      ...row,
+      timestamp_formatted: new Date(row.timestamp_utc)
+        .toISOString()
+        .replace("T", " ")
+        .slice(0, 19)
+    }));
+
+    return res.json({
+      pagination: {
+        page,
+        pageSize,
+        totalRows,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1
+      },
+      data: formatted
+    });
 
   } catch (err) {
     console.error("DB select error:", err);
@@ -137,7 +184,7 @@ app.get('/data', async (req, res) => {
   }
 });
 
-
+// Start server
 app.listen(port, () => {
   console.log(`✅ Server running on port ${port}`);
 });
